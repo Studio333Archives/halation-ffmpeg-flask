@@ -1,0 +1,278 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Halation Lab — Drag & Drop</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link href="{{ url_for('static', filename='style.css') }}" rel="stylesheet" />
+</head>
+<body>
+  <header class="site-header"><h1>Halation Lab</h1></header>
+
+  <main class="container">
+    <!-- UPLOAD (drag & drop) -->
+    <section id="uploadCard" class="card">
+      <div id="dz" class="dropzone" tabindex="0" role="button" aria-label="Upload image or video by drag-and-drop or click">
+        <div class="dz-icon" aria-hidden="true">⬆️</div>
+        <div class="dz-title">Drag & drop an image or video</div>
+        <div class="dz-sub">or click to choose a file</div>
+        <input id="file" type="file" accept="image/*,video/*" class="file-input" />
+      </div>
+
+      <div id="picked" class="picked" hidden>
+        <div class="picked-left">
+          <div class="picked-thumb" id="thumb"></div>
+        </div>
+        <div class="picked-right">
+          <div class="picked-name" id="fname">—</div>
+          <div class="picked-meta" id="fmeta">—</div>
+          <button id="changeBtn" class="btn ghost" type="button">Change</button>
+        </div>
+      </div>
+
+      <!-- SETTINGS (visible by default) -->
+      <details class="panel" open>
+        <summary>Processing settings</summary>
+        <form id="cfg" class="grid">
+          <label>
+            <span>Variants (1–36)</span>
+            <input type="range" name="count" id="count" min="1" max="36" value="12" />
+            <small class="hint"><code id="count_val">12</code></small>
+          </label>
+
+          <label>
+            <span>Threshold min (200–255)</span>
+            <input type="range" name="thr_min" id="thr_min" min="200" max="255" value="225" />
+            <small class="hint"><code id="thr_min_val">225</code></small>
+          </label>
+          <label>
+            <span>Threshold max (200–255)</span>
+            <input type="range" name="thr_max" id="thr_max" min="200" max="255" value="240" />
+            <small class="hint"><code id="thr_max_val">240</code></small>
+          </label>
+
+          <label>
+            <span>Blur σ min (1–20)</span>
+            <input type="range" name="sig_min" id="sig_min" min="1" max="20" value="6" />
+            <small class="hint"><code id="sig_min_val">6</code></small>
+          </label>
+          <label>
+            <span>Blur σ max (1–20)</span>
+            <input type="range" name="sig_max" id="sig_max" min="1" max="20" value="14" />
+            <small class="hint"><code id="sig_max_val">14</code></small>
+          </label>
+
+          <label>
+            <span>Opacity min (0.05–0.9)</span>
+            <input type="range" name="op_min" id="op_min" step="0.01" min="0.05" max="0.9" value="0.18" />
+            <small class="hint"><code id="op_min_val">0.18</code></small>
+          </label>
+          <label>
+            <span>Opacity max (0.05–0.9)</span>
+            <input type="range" name="op_max" id="op_max" step="0.01" min="0.05" max="0.9" value="0.30" />
+            <small class="hint"><code id="op_max_val">0.30</code></small>
+          </label>
+
+          <label class="full">
+            <span>Tint</span>
+            <div class="radio-row">
+              <label class="radio"><input type="radio" name="tint" value="neutral" checked /> Neutral</label>
+              <label class="radio"><input type="radio" name="tint" value="warm" /> Warm</label>
+              <label class="radio"><input type="radio" name="tint" value="cool" /> Cool</label>
+            </div>
+          </label>
+        </form>
+        <div class="hint">These values are sent with the job and used to generate evenly spaced variants between the min/max ranges.</div>
+      </details>
+
+      <div class="upload-actions">
+        <button id="startBtn" class="btn primary" disabled type="button">Start</button>
+        <button id="resetBtn" class="btn ghost" type="button">Reset</button>
+        <span id="err" class="error" aria-live="polite"></span>
+      </div>
+    </section>
+
+    <!-- JOB (live previews) -->
+    <section id="jobCard" class="card" hidden>
+      <div class="job-header">
+        <h2 id="jobTitle">Job</h2>
+        <div id="status" class="status">Status: —</div>
+      </div>
+      <div class="progress" aria-hidden="true"><div class="bar" id="bar" style="width:0%"></div></div>
+      <div id="grid" class="grid thumbs"></div>
+    </section>
+  </main>
+
+  <footer class="site-footer"><small>Flask + ffmpeg • Drag & Drop SPA</small></footer>
+
+  <script>
+  // --- Elements
+    const dz = document.getElementById('dz');
+    const input = document.getElementById('file');
+    const startBtn = document.getElementById('startBtn');
+    const resetBtn = document.getElementById('resetBtn');
+    const err = document.getElementById('err');
+    const picked = document.getElementById('picked');
+    const fname = document.getElementById('fname');
+    const fmeta = document.getElementById('fmeta');
+    const thumb = document.getElementById('thumb');
+    const changeBtn = document.getElementById('changeBtn');
+    const cfg = document.getElementById('cfg');
+
+    const jobCard = document.getElementById('jobCard');
+    const jobTitle = document.getElementById('jobTitle');
+    const statusEl = document.getElementById('status');
+    const grid = document.getElementById('grid');
+    const bar = document.getElementById('bar');
+
+  // --- Range mirrors
+    const mirror = (id) => (ev) => (document.getElementById(id + '_val').textContent = ev.target.value);
+    ['count','thr_min','thr_max','sig_min','sig_max','op_min','op_max'].forEach(id=>{
+      const el = document.getElementById(id);
+      el.addEventListener('input', mirror(id));
+    });
+
+  // --- Persist settings in localStorage
+    const LS_KEY = 'halation_cfg';
+    function saveCfg() {
+      const data = Object.fromEntries(new FormData(cfg).entries());
+      localStorage.setItem(LS_KEY, JSON.stringify(data));
+    }
+    function loadCfg() {
+      try {
+        const data = JSON.parse(localStorage.getItem(LS_KEY) || '{}');
+        Object.entries(data).forEach(([k,v])=>{
+          const el = cfg.elements.namedItem(k);
+          if (!el) return;
+          if (el.type === 'radio') {
+            [...cfg.querySelectorAll(`input[name="${k}"]`)].forEach(r=>{ r.checked = (r.value === v); });
+          } else {
+            el.value = v;
+            const mirrorEl = document.getElementById(k + '_val');
+            if (mirrorEl) mirrorEl.textContent = v;
+          }
+        });
+      } catch {}
+    }
+    cfg.addEventListener('input', saveCfg);
+    loadCfg();
+
+  // --- Dropzone UX
+    let fileBlob = null;
+    function resetPick() {
+      fileBlob = null;
+      picked.hidden = true;
+      dz.classList.remove('has-file');
+      thumb.innerHTML = '';
+      fname.textContent = '—';
+      fmeta.textContent = '—';
+      startBtn.disabled = true;
+      input.value = '';
+      err.textContent = '';
+    }
+    function setPick(file) {
+      fileBlob = file;
+      picked.hidden = false;
+      dz.classList.add('has-file');
+      fname.textContent = file.name;
+      fmeta.textContent = `${file.type || 'application/octet-stream'} • ${(file.size/1024/1024).toFixed(2)} MB`;
+      startBtn.disabled = false;
+      thumb.innerHTML = '';
+      if (file.type.startsWith('image/')) {
+        const img = document.createElement('img');
+        img.alt = '';
+        img.src = URL.createObjectURL(file);
+        img.onload = () => URL.revokeObjectURL(img.src);
+        thumb.appendChild(img);
+      } else if (file.type.startsWith('video/')) {
+        const v = document.createElement('video');
+        v.muted = true; v.playsInline = true;
+        v.src = URL.createObjectURL(file);
+        v.onloadeddata = () => { v.currentTime = Math.min(1, v.duration/2 || 1); };
+        v.onseeked = () => { v.pause(); };
+        thumb.appendChild(v);
+      } else {
+        thumb.innerHTML = '<div class="file-badge">FILE</div>';
+      }
+    }
+    dz.addEventListener('click', () => input.click());
+    dz.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); input.click(); }
+    });
+    dz.addEventListener('dragover', (e) => { e.preventDefault(); dz.classList.add('drag'); });
+    dz.addEventListener('dragleave', () => dz.classList.remove('drag'));
+    dz.addEventListener('drop', (e) => {
+      e.preventDefault(); dz.classList.remove('drag');
+      const f = e.dataTransfer.files && e.dataTransfer.files[0];
+      if (f) setPick(f);
+    });
+    input.addEventListener('change', () => {
+      const f = input.files && input.files[0];
+      if (f) setPick(f);
+    });
+    changeBtn.addEventListener('click', () => input.click());
+    resetBtn.addEventListener('click', () => { resetPick(); localStorage.removeItem(LS_KEY); loadCfg(); });
+
+  // --- Start job
+    let currentJob = null, seen = new Set();
+    startBtn.addEventListener('click', async () => {
+      err.textContent = '';
+      if (!fileBlob) { err.textContent = 'Select a file.'; return; }
+
+      const fd = new FormData();
+      fd.append('file', fileBlob, fileBlob.name);
+      new FormData(cfg).forEach((v, k) => fd.append(k, v));
+
+      try {
+        const res = await fetch('/api/start', { method: 'POST', body: fd });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'start_failed');
+
+        currentJob = data.job_id;
+        seen = new Set();
+        grid.innerHTML = '';
+        jobCard.hidden = false;
+        jobTitle.textContent = `Job ${currentJob}`;
+        statusEl.textContent = 'Status: queued';
+        bar.style.width = '0%';
+        poll(currentJob);
+        window.scrollTo({ top: jobCard.offsetTop - 12, behavior: 'smooth' });
+      } catch (ex) {
+        err.textContent = ex.message;
+      }
+    });
+
+  // --- Poll previews
+    async function poll(jobId) {
+      try {
+        const r = await fetch(`/api/status/${jobId}`);
+        const d = await r.json();
+        if (!r.ok) throw new Error(d.error || 'status_failed');
+
+        statusEl.textContent = `Status: ${d.status} • ${d.progress || ''}`;
+        const parts = (d.progress || '0/0').split('/');
+        const done = parseInt(parts[0] || '0', 10), total = parseInt(parts[1] || '0', 10);
+        const pct = total ? Math.max(5, Math.min(100, Math.round((done/total)*100))) : 0;
+        bar.style.width = pct + '%';
+
+        (d.generated || []).forEach(name => {
+          if (seen.has(name)) return;
+          seen.add(name);
+          const fig = document.createElement('figure');
+          const img = document.createElement('img');
+          img.loading = 'lazy';
+          img.src = `/results/${jobId}/${name}.png?t=${Date.now()}`;
+          img.alt = name;
+          const cap = document.createElement('figcaption'); cap.textContent = name;
+          fig.appendChild(img); fig.appendChild(cap); grid.appendChild(fig);
+        });
+
+        if (d.status === 'done' || d.status === 'error') return;
+      } catch(e) {
+      // soft retry
+      }
+      setTimeout(() => poll(jobId), 800);
+    }
+  </script>
+</body>
+</html>

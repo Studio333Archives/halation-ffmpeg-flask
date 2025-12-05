@@ -1,0 +1,47 @@
+{% extends "layout.html" %}
+{% block content %}
+<section class="card">
+  <h2>Job {{ job.id }}</h2>
+  <div id="status" class="status">Status: {{ job.status }} • Progress: {{ job.progress }}</div>
+  <div id="grid" class="grid thumbs"></div>
+</section>
+
+<script>
+  const jobId = "{{ job.id }}";
+  const grid = document.getElementById('grid');
+  const statusEl = document.getElementById('status');
+  let seen = new Set();
+
+  function poll() {
+    fetch(`{{ url_for('api_status', job_id='') }}${jobId}`)
+    .then(r => r.json())
+    .then(data => {
+      statusEl.textContent = `Status: ${data.status} • Progress: ${data.progress || ''}`;
+      if (data.error) {
+        const err = document.createElement('div');
+        err.className = 'error';
+        err.textContent = data.error;
+        grid.appendChild(err);
+      }
+      (data.generated || []).forEach(name => {
+        if (seen.has(name)) return;
+        seen.add(name);
+        const fig = document.createElement('figure');
+        const img = document.createElement('img');
+        img.loading = 'lazy';
+        img.src = `{{ url_for('result_image', job_id=job.id, name='__') }}`.replace('__', name) + `?t=${Date.now()}`;
+        img.alt = name;
+        const cap = document.createElement('figcaption');
+        cap.textContent = name;
+        fig.appendChild(img);
+        fig.appendChild(cap);
+        grid.appendChild(fig);
+      });
+      if (data.status === 'done' || data.status === 'error') return;
+      setTimeout(poll, 1000);
+    })
+    .catch(() => setTimeout(poll, 1500));
+  }
+  poll();
+</script>
+{% endblock %}
